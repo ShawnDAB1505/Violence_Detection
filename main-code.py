@@ -5,9 +5,10 @@ import joblib
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from PIL import Image, ImageTk
+import time
 
 # =====================================================
-# MODEL WITH FULL TRAINING LOGIC
+# ENHANCED DETECTOR WITH DUAL MODE
 # =====================================================
 class ViolenceDetector:
     def __init__(self, model_path):
@@ -84,9 +85,11 @@ class ViolenceDetector:
         feat = feat.reshape(1, -1)
         return self.model.predict_proba(feat)[0][1]
     
-    def calculate_final_prob(self, feat, raw_prob):
+    def calculate_final_prob(self, feat, raw_prob, is_realtime=False):
         """
-        🔥 FULL LOGIC TỪ MODEL TRAINING - KHÔNG BỎ QUA GÌ CẢ
+        🔥 DUAL MODE:
+        - is_realtime=False (Folder): Giữ nguyên logic gốc (accuracy cao)
+        - is_realtime=True (Webcam): Thêm filters nghiêm ngặt
         """
         motion_stats = feat[-12:]
         
@@ -104,13 +107,33 @@ class ViolenceDetector:
         edge_density = motion_stats[11]
         
         # ===============================================
-        # TIER 1: STATIC DETECTION
+        # WEBCAM MODE: EXTRA STRICT FILTERING
         # ===============================================
+        if is_realtime:
+            # Filter 1: Vẫy tay đơn giản
+            if (symmetry > 0.4 and motion_area < 0.3 and mean_mag < 4.0):
+                return raw_prob * 0.05
+            
+            # Filter 2: Lắc đầu
+            if (rhythm_score > 2.0 and accel_jitter < 2.0 and motion_area < 0.25):
+                return raw_prob * 0.08
+            
+            # Filter 3: Single motion zone
+            if (motion_area < 0.35 and mean_mag < 5.0):
+                return raw_prob * 0.15
+            
+            # Filter 4: Require multi-zone chaos
+            if not (motion_area > 0.4 and accel_jitter > 2.5 and edge_density > 0.12):
+                if raw_prob < 0.75:
+                    return raw_prob * 0.25
+        
+        # ===============================================
+        # SHARED LOGIC (Folder & Webcam)
+        # ===============================================
+        
+        # TIER 1: STATIC DETECTION
         if mean_mag < 0.5:
-            if raw_prob > 0.90:
-                final_prob = raw_prob * 0.3
-            else:
-                final_prob = raw_prob * 0.1
+            final_prob = raw_prob * (0.3 if raw_prob > 0.90 else 0.1)
         
         elif mean_mag < 0.8:
             if raw_prob > 0.85:
@@ -120,17 +143,14 @@ class ViolenceDetector:
             else:
                 final_prob = raw_prob * 0.15
         
-        # ===============================================
-        # TIER 2: VIOLENCE DETECTION (Priority)
-        # ===============================================
-        
-        elif accel_jitter > 4.0 and std_mag > 3.0:
+        # TIER 2: VIOLENCE PATTERNS
+        elif (accel_jitter > 4.0 and std_mag > 3.0):
             final_prob = min(raw_prob * 1.6, 1.0)
         
-        elif accel_jitter > 3.5 and mean_mag > 2.0:
+        elif (accel_jitter > 3.5 and mean_mag > 2.0):
             final_prob = min(raw_prob * 1.5, 1.0)
         
-        elif accel_jitter > 3.0 and angle_std > 0.9:
+        elif (accel_jitter > 3.0 and angle_std > 0.9):
             final_prob = min(raw_prob * 1.4, 1.0)
         
         elif (mean_mag > 2.0 and mean_mag < 4.5 and 
@@ -143,44 +163,32 @@ class ViolenceDetector:
         elif (flow_consistency > 3.0 and accel_jitter > 2.5):
             final_prob = min(raw_prob * 1.25, 1.0)
         
-        # ===============================================
-        # TIER 3: CLEAN SPORTS DETECTION (PENALTY MẠNH)
-        # ===============================================
-        
-        # Pattern A: RHYTHMIC FAST MOTION (Chạy bộ, đạp xe)
+        # TIER 3: CLEAN SPORTS (STRONG PENALTY)
         elif (mean_mag > 4.0 and rhythm_score > 2.5 and 
               directional_stability > 0.8 and accel_jitter < 2.0):
             final_prob = raw_prob * 0.02
         
-        # Pattern B: SMOOTH DIRECTIONAL (Lướt ván, trượt tuyết)
         elif (mean_mag > 5.0 and directional_stability > 1.0 and 
               flow_consistency < 1.5 and raw_prob < 0.65):
             final_prob = raw_prob * 0.03
         
-        # Pattern C: PURE ORGANIZED SPORTS (Bóng đá, bóng rổ)
         elif (mean_mag > 6.5 and angle_std < 0.55 and 
               accel_jitter < 1.8 and raw_prob < 0.60):
             final_prob = raw_prob * 0.03
         
-        # Pattern D: FAST SYMMETRIC (Chạy đường dài, bơi lội)
         elif (mean_mag > 6.0 and symmetry < 0.3 and 
               rhythm_score > 2.0 and raw_prob < 0.65):
             final_prob = raw_prob * 0.04
         
-        # Pattern E: MEDIUM-HIGH ORGANIZED (Tennis, Volleyball)
         elif (mean_mag > 5.0 and angle_std < 0.60 and 
               accel_jitter < 2.0 and raw_prob < 0.70):
             final_prob = raw_prob * 0.08
         
-        # Pattern F: SMOOTH CONTINUOUS (Cycling, Swimming)
         elif (mean_mag > 4.5 and std_mag < 1.5 and 
               accel_jitter < 1.5 and flow_consistency < 2.0):
             final_prob = raw_prob * 0.10
         
-        # ===============================================
-        # TIER 4: CONTACT SPORTS / AMBIGUOUS ZONE
-        # ===============================================
-        
+        # TIER 4: CONTACT SPORTS
         elif mean_mag > 4.5 and accel_jitter < 3.0 and raw_prob < 0.65:
             final_prob = raw_prob * 0.30
         
@@ -193,7 +201,6 @@ class ViolenceDetector:
         elif mean_mag > 1.5 and mean_mag < 2.5:
             final_prob = raw_prob * 0.75
         
-        # TIER 5: DEFAULT
         else:
             final_prob = raw_prob
         
@@ -205,7 +212,7 @@ class ViolenceDetector:
 class App:
     def __init__(self, root, model_path):
         self.root = root
-        self.root.title("Violence Detection System - Strict Mode")
+        self.root.title("Violence Detection - Dual Mode (Folder Optimized)")
         self.root.geometry("1200x800")
         self.detector = ViolenceDetector(model_path)
         
@@ -214,6 +221,9 @@ class App:
         self.cap = None
         self.mode = "file"
         self.tk_images = []
+        
+        self.last_alert_time = 0
+        self.alert_cooldown = 2.0
         
         self.build_ui()
         self.reset_tracking_variables()
@@ -225,7 +235,7 @@ class App:
         left_panel = tk.Frame(main_container, width=400)
         left_panel.pack(side=tk.LEFT, fill=tk.BOTH)
 
-        right_panel = tk.LabelFrame(main_container, text="🎯 Evidence (Only True Violence)")
+        right_panel = tk.LabelFrame(main_container, text="🎯 Evidence (High Confidence)")
         right_panel.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=(10, 0))
 
         tk.Label(left_panel, text="INPUT SOURCE:", font=("Arial", 9, "bold")).pack(anchor="w")
@@ -240,7 +250,7 @@ class App:
         self.btn_start = tk.Button(left_panel, text="🚀 START", bg="#2ecc71", fg="white", command=self.start_process)
         self.btn_start.pack(pady=5, fill=tk.X)
 
-        self.btn_camera = tk.Button(left_panel, text="📷 CAMERA", bg="#3498db", fg="white", command=self.start_camera)
+        self.btn_camera = tk.Button(left_panel, text="📷 CAMERA (Strict Mode)", bg="#3498db", fg="white", command=self.start_camera)
         self.btn_camera.pack(pady=5, fill=tk.X)
 
         self.btn_stop = tk.Button(left_panel, text="⏹ STOP", bg="#e74c3c", fg="white", command=self.stop_process, state=tk.DISABLED)
@@ -273,7 +283,6 @@ class App:
         self.max_score = 0
         self.top_frames = []
         
-        # Tracking giống model training
         self.static_frames = 0
         self.frames_with_motion = 0
         self.frames_with_strong_motion = 0
@@ -284,6 +293,8 @@ class App:
         self.clean_sports_frames = 0
         self.consecutive_frames = 0
         self.max_consecutive = 0
+        
+        self.prob_history = []
 
     def browse_file(self):
         f = filedialog.askopenfilename(filetypes=[("Video", "*.mp4 *.avi *.mkv *.mov")])
@@ -299,7 +310,6 @@ class App:
             messagebox.showwarning("Error", "Path not found!")
             return
         
-        # Clear evidence
         for widget in self.scrollable_frame.winfo_children():
             widget.destroy()
         self.tk_images = []
@@ -326,7 +336,8 @@ class App:
         self.btn_stop.config(state=tk.NORMAL)
         self.cap = cv2.VideoCapture(0)
         self.reset_tracking_variables()
-        self.log.insert(tk.END, "📷 Camera started. Press 'q' to stop.\n")
+        self.log.insert(tk.END, "📷 Camera started (STRICT MODE)\n")
+        self.log.insert(tk.END, "⚠️  Filters: Hand wave, head shake, single-zone motion\n\n")
         self.process_frame()
 
     def stop_process(self):
@@ -359,6 +370,8 @@ class App:
             self.finish_video()
             return
 
+        is_realtime = (self.mode == "camera")
+
         if self.prev_frame is not None:
             feat, curr_mag, curr_flow = self.detector.extract_features(
                 self.prev_frame, frame, self.prev_mag, self.prev_flow
@@ -366,15 +379,13 @@ class App:
             
             if feat is not None:
                 raw_prob = self.detector.predict(feat)
-                final_prob = self.detector.calculate_final_prob(feat, raw_prob)
+                final_prob = self.detector.calculate_final_prob(feat, raw_prob, is_realtime)
                 
-                # Tracking
                 motion_stats = feat[-12:]
                 mean_mag = motion_stats[0]
                 accel_jitter = motion_stats[2]
                 angle_std = motion_stats[6]
                 
-                # Frame classification
                 if mean_mag < 0.8:
                     self.static_frames += 1
                 elif mean_mag < 2.0:
@@ -386,7 +397,6 @@ class App:
                     self.frames_with_strong_motion += 1
                     self.frames_with_motion += 1
                 
-                # Pattern tracking
                 if accel_jitter > 3.0:
                     self.chaos_frames += 1
                 
@@ -399,23 +409,25 @@ class App:
                 if final_prob > 0.65:
                     self.high_prob_frames += 1
                 
-                # Smoothing
                 if self.smoothed_score == 0:
                     self.smoothed_score = final_prob
                 else:
                     self.smoothed_score = self.decay * self.smoothed_score + (1 - self.decay) * final_prob
                 
-                # Max score
                 self.max_score = max(self.max_score, final_prob)
                 
-                # Consecutive
-                if self.smoothed_score > 0.55 and mean_mag > 0.8:
+                threshold = 0.70 if is_realtime else 0.55
+                if self.smoothed_score > threshold and mean_mag > 0.8:
                     self.consecutive_frames += 1
                 else:
                     self.consecutive_frames = 0
                 self.max_consecutive = max(self.max_consecutive, self.consecutive_frames)
                 
-                # Save evidence
+                if is_realtime:
+                    self.prob_history.append(final_prob)
+                    if len(self.prob_history) > 30:
+                        self.prob_history.pop(0)
+                
                 if final_prob > 0.65:
                     self.top_frames.append((final_prob, raw_prob, frame.copy(), self.processed))
                     self.top_frames.sort(key=lambda x: x[0], reverse=True)
@@ -431,10 +443,35 @@ class App:
         
         if self.mode == "camera":
             display = frame.copy()
-            status_text = f"Score: {self.smoothed_score:.1%}"
-            cv2.putText(display, status_text, (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+            
+            current_time = time.time()
+            show_alert = False
+            
+            if len(self.prob_history) >= 15:
+                recent_avg = np.mean(self.prob_history[-15:])
+                recent_max = np.max(self.prob_history[-15:])
+                
+                if (self.consecutive_frames >= 8 and 
+                    recent_avg > 0.75 and 
+                    recent_max > 0.85 and
+                    self.max_consecutive >= 8):
+                    
+                    if current_time - self.last_alert_time > self.alert_cooldown:
+                        show_alert = True
+                        self.last_alert_time = current_time
+            
+            if show_alert:
+                cv2.rectangle(display, (0, 0), (display.shape[1], display.shape[0]), (0, 0, 255), 15)
+                cv2.putText(display, "!!! VIOLENCE DETECTED !!!", (50, 100), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 0, 255), 4)
+            
+            status_text = f"Score: {self.smoothed_score:.1%} | Consec: {self.consecutive_frames}"
+            color = (0, 0, 255) if self.smoothed_score > 0.70 else (0, 255, 0)
+            cv2.putText(display, status_text, (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
+            
             cv2.imshow("Live Feed", display)
-            if cv2.waitKey(1) & 0xFF == ord('q'): 
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord('q') or key == 27:
                 self.stop_process()
 
         self.root.after(1, self.process_frame)
@@ -449,7 +486,7 @@ class App:
             return
         
         # ===============================================
-        # DECISION LOGIC - GIỐNG MODEL TRAINING
+        # FOLDER MODE: OPTIMIZED DECISION LOGIC
         # ===============================================
         static_ratio = self.static_frames / self.total_frames
         motion_ratio = self.frames_with_motion / self.total_frames
@@ -462,54 +499,70 @@ class App:
         is_viol = False
         decision_reason = ""
         
-        # Branch 1: STATIC VIDEO
-        if static_ratio > 0.70:
-            is_viol = high_raw_prob_ratio > 0.60 and self.max_score > 0.90
+        # Branch 1: STATIC VIDEO (Giảm threshold từ 0.70 xuống 0.65)
+        if static_ratio > 0.65:
+            # Nới lỏng: Chỉ cần max_score > 0.85 hoặc high_raw_prob > 0.55
+            is_viol = (self.max_score > 0.85 and high_raw_prob_ratio > 0.50) or \
+                      (self.max_score > 0.90 and high_raw_prob_ratio > 0.40)
             decision_reason = "STATIC"
         
-        # Branch 2: MOSTLY STATIC
-        elif static_ratio > 0.50:
-            is_viol = ((self.max_consecutive >= 10 and self.smoothed_score > 0.80) or
-                      (self.max_score > 0.95 and high_prob_ratio > 0.30))
+        # Branch 2: MOSTLY STATIC (Giảm từ 0.50 xuống 0.45)
+        elif static_ratio > 0.45:
+            # Nới lỏng: max_consecutive >= 5 (từ 10), smoothed > 0.70 (từ 0.80)
+            is_viol = (self.max_consecutive >= 5 and self.smoothed_score > 0.70) or \
+                      (self.max_score > 0.90 and high_prob_ratio > 0.25)
             decision_reason = "MOSTLY_STATIC"
         
-        # Branch 3: CHAOS-DOMINATED
+        # Branch 3: CHAOS-DOMINATED (Giữ nguyên 0.25)
         elif chaos_ratio > 0.25:
-            is_viol = ((self.max_consecutive >= 4) or (self.smoothed_score > 0.60) or
-                      (self.max_score > 0.75) or (high_prob_ratio > 0.20 and self.max_score > 0.65))
+            is_viol = (self.max_consecutive >= 4) or \
+                      (self.smoothed_score > 0.60) or \
+                      (self.max_score > 0.75) or \
+                      (high_prob_ratio > 0.20 and self.max_score > 0.65)
             decision_reason = "CHAOS"
         
-        # Branch 4: CLEAN SPORTS
+        # Branch 4: CLEAN SPORTS (Giữ nguyên - cần strict)
         elif clean_sports_ratio > 0.40 or (strong_motion_ratio > 0.50 and chaos_ratio < 0.15):
-            is_viol = ((self.max_consecutive >= 10 and self.smoothed_score > 0.90) or
-                      (self.smoothed_score > 0.90 and self.max_score > 0.98) or
-                      (chaos_ratio > 0.35 and self.max_score > 0.95))
+            is_viol = (self.max_consecutive >= 10 and self.smoothed_score > 0.90) or \
+                      (self.smoothed_score > 0.90 and self.max_score > 0.98) or \
+                      (chaos_ratio > 0.35 and self.max_score > 0.95)
             decision_reason = "CLEAN_SPORTS"
         
-        # Branch 5: HIGH MOTION (Contact Sports)
+        # Branch 5: HIGH MOTION / CONTACT SPORTS (Nới lỏng)
         elif strong_motion_ratio > 0.35:
-            is_viol = ((self.max_consecutive >= 6) or (self.smoothed_score > 0.75) or
-                      (self.max_score > 0.88) or (chaos_ratio > 0.20 and self.max_score > 0.80))
+            # Giảm threshold: max_consecutive >= 4 (từ 6), smoothed > 0.70 (từ 0.75)
+            is_viol = (self.max_consecutive >= 4) or \
+                      (self.smoothed_score > 0.70) or \
+                      (self.max_score > 0.85) or \
+                      (chaos_ratio > 0.15 and self.max_score > 0.75)
             decision_reason = "CONTACT_SPORTS"
         
-        # Branch 6: NORMAL MOTION
+        # Branch 6: NORMAL MOTION (Nới lỏng)
         elif motion_ratio > 0.20:
-            if self.max_score > 0.88 and self.smoothed_score < 0.60 and self.max_consecutive < 3:
+            # Spike safeguard vẫn giữ
+            if self.max_score > 0.88 and self.smoothed_score < 0.55 and self.max_consecutive < 3:
                 is_viol = False
             else:
-                is_viol = ((self.max_consecutive >= 6) or (self.smoothed_score > 0.75) or
-                          (self.max_score > 0.92) or (high_prob_ratio > 0.35 and self.max_score > 0.85))
+                # Giảm: max_consecutive >= 4 (từ 6), smoothed > 0.70 (từ 0.75)
+                is_viol = (self.max_consecutive >= 4) or \
+                          (self.smoothed_score > 0.70) or \
+                          (self.max_score > 0.88) or \
+                          (high_prob_ratio > 0.30 and self.max_score > 0.80)
             decision_reason = "NORMAL"
         
-        # Branch 7: LOW MOTION
+        # Branch 7: LOW MOTION (Nới lỏng)
         elif motion_ratio > 0.10:
-            is_viol = ((self.max_consecutive >= 5) or (self.smoothed_score > 0.70) or
-                      (self.max_score > 0.85) or (high_raw_prob_ratio > 0.40 and self.max_score > 0.75))
+            # Giảm: max_consecutive >= 3 (từ 5), smoothed > 0.65 (từ 0.70)
+            is_viol = (self.max_consecutive >= 3) or \
+                      (self.smoothed_score > 0.65) or \
+                      (self.max_score > 0.80) or \
+                      (high_raw_prob_ratio > 0.35 and self.max_score > 0.70)
             decision_reason = "LOW_MOTION"
         
-        # Branch 8: MINIMAL
+        # Branch 8: MINIMAL MOTION (Nới lỏng)
         else:
-            is_viol = high_raw_prob_ratio > 0.50 and self.max_score > 0.80
+            # Giảm: high_raw_prob > 0.45 (từ 0.50), max_score > 0.75 (từ 0.80)
+            is_viol = (high_raw_prob_ratio > 0.45 and self.max_score > 0.75)
             decision_reason = "MINIMAL"
         
         # Logging
@@ -595,6 +648,7 @@ class App:
         self.is_running = False
         self.btn_start.config(state=tk.NORMAL)
         self.btn_camera.config(state=tk.NORMAL)
+        self.btn_stop.config(state=tk.DISABLED)
         self.lbl_status.config(text="Status: Finished")
 
 if __name__ == "__main__":
